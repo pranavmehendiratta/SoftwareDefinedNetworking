@@ -7,11 +7,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.openflow.protocol.OFMatch;
+import org.openflow.protocol.action.OFAction;
+import org.openflow.protocol.action.OFActionOutput;
+import org.openflow.protocol.instruction.OFInstruction;
+import org.openflow.protocol.instruction.OFInstructionApplyActions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import edu.wisc.cs.sdn.apps.util.Host;
-
+import edu.wisc.cs.sdn.apps.util.SwitchCommands;
 import net.floodlightcontroller.core.IFloodlightProviderService;
 import net.floodlightcontroller.core.IOFSwitch;
 import net.floodlightcontroller.core.IOFSwitch.PortChangeType;
@@ -50,6 +55,11 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
     
     // Map of hosts to devices
     private Map<IDevice,Host> knownHosts;
+    
+    // Routing table
+    L3RoutingTable distGraph;
+    
+    Map<String,String> config;
 
 	/**
      * Loads dependencies and initializes data structures.
@@ -59,7 +69,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			throws FloodlightModuleException 
 	{
 		log.info(String.format("Initializing %s...", MODULE_NAME));
-		Map<String,String> config = context.getConfigParams(this);
+		config = context.getConfigParams(this);
         table = Byte.parseByte(config.get("table"));
         
 		this.floodlightProv = context.getServiceImpl(
@@ -68,6 +78,8 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
         this.deviceProv = context.getServiceImpl(IDeviceService.class);
         
         this.knownHosts = new ConcurrentHashMap<IDevice,Host>();
+        
+        distGraph = new L3RoutingTable();
 	}
 
 	/**
@@ -84,7 +96,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Initialize variables or perform startup tasks, if necessary */
-		
+		distGraph.floydWarshall(this.getSwitches(), this.getLinks());
 		/*********************************************************************/
 	}
 	
@@ -115,17 +127,108 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	public void deviceAdded(IDevice device) 
 	{
 		Host host = new Host(device, this.floodlightProv);
+		IOFSwitch currSwitch = host.getSwitch();
+		
 		// We only care about a new host if we know its IP
 		if (host.getIPv4Address() != null)
 		{
 			log.info(String.format("Host %s added", host.getName()));
 			this.knownHosts.put(device, host);
 			
+			if (host.isAttachedToSwitch()) {
+				OFMatch matchCriteria = new OFMatch();
+				matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
+				matchCriteria.setNetworkDestination(host.getIPv4Address());
+				
+				OFAction actionOutput = new OFActionOutput(host.getPort());
+				
+				// Creating list of instructions to be executed when the dest ip matches
+				List<OFInstruction> instructions = new ArrayList<OFInstruction>();
+				OFInstructionApplyActions actions = new OFInstructionApplyActions();
+				List<OFAction> actionList = new ArrayList<OFAction>();
+				
+				actionList.add(actionOutput);
+				actions.setActions(actionList);
+				instructions.add(actions);
+				
+				boolean result = SwitchCommands.installRule(host.getSwitch(), table, SwitchCommands.DEFAULT_PRIORITY, matchCriteria, instructions);
+				System.out.println("Rule to go from switch " + currSwitch.getId() + " -> " + host.getIPv4Address() + " is added: " + result);
+			}
+			
 			/*****************************************************************/
 			/* TODO: Update routing: add rules to route to new host          */
 			
+			distGraph.floydWarshall(this.getSwitches(), this.getLinks());
+			System.out.println("Ports: " + Arrays.asList(distGraph.ports));
+			computeFlowTable(null);
+			
 			/*****************************************************************/
 		}
+	}
+	
+	public void installRule(Host host) {
+		IOFSwitch currSwitch = host.getSwitch();
+		for(IDevice idevice : knownHosts.keySet()) {				
+			
+			Host targetHost = knownHosts.get(idevice);
+			if(targetHost == host) 
+				continue;
+			
+			// Creating OFMatch object and setting the ethernet type and destination ip
+			OFMatch matchCriteria = new OFMatch();
+			matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
+			matchCriteria.setNetworkDestination(targetHost.getIPv4Address());
+			
+			// Find the port to send the packet on
+			IOFSwitch targetSwitch = targetHost.getSwitch();
+			long targetSwitchID = targetSwitch.getId();
+			
+			int nextHopIndex = distGraph.findPath(currSwitch.getId(), targetSwitchID);
+			System.out.println("nextHopIndex: " + nextHopIndex + ", currSwitchID: " + currSwitch.getId() + ", targetSwitchID: " + targetSwitchID);
+			
+			if (nextHopIndex == -1) {
+				continue;
+			}
+
+			long nextHopSwitchID = distGraph.indexToSwitch.get(nextHopIndex);
+			
+			String portKey = distGraph.getKey(currSwitch.getId(), nextHopSwitchID);
+			
+			System.out.println("nextHopSwitchID: " + nextHopSwitchID + ", portKey: " + portKey);
+			
+			// creating the action output object
+			OFAction actionOutput = new OFActionOutput(distGraph.ports.get(portKey));
+			
+			// Creating list of instructions to be executed when the dest ip matches
+			List<OFInstruction> instructions = new ArrayList<OFInstruction>();
+			OFInstructionApplyActions actions = new OFInstructionApplyActions();
+			List<OFAction> actionList = new ArrayList<OFAction>();
+			
+			actionList.add(actionOutput);
+			actions.setActions(actionList);
+			instructions.add(actions);
+			
+			boolean result = SwitchCommands.installRule(currSwitch, table, SwitchCommands.DEFAULT_PRIORITY, matchCriteria, instructions);
+			System.out.println("Rule to go from switch " + currSwitch.getId() + " -> " + targetSwitch.getId() + " is added: " + result);
+		}
+		
+	}
+	
+	
+	public void computeFlowTable(Host host) {
+		//Iterate through all the routers
+		if (host == null) {
+			table = Byte.parseByte(config.get("table"));
+			for(IDevice idevice : knownHosts.keySet()) {
+				installRule(knownHosts.get(idevice));
+			}
+		}
+		
+		//Else iterate only for that router
+		else {
+			installRule(host);
+		}
+		
 	}
 
 	/**
@@ -145,7 +248,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: remove rules to route to host               */
-		
+
 		/*********************************************************************/
 	}
 
@@ -173,7 +276,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change rules to route to host               */
-		
+
 		/*********************************************************************/
 	}
 	
@@ -189,7 +292,9 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-		
+	
+		System.out.println("-------------------- Inside switch added ---------------------------");
+		distGraph.floydWarshall(this.getSwitches(), this.getLinks());
 		/*********************************************************************/
 	}
 
@@ -206,6 +311,8 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
 		
+		System.out.println("Inside switch removed");
+		distGraph.floydWarshall(this.getSwitches(), this.getLinks());
 		/*********************************************************************/
 	}
 
@@ -236,7 +343,8 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
-		
+		distGraph.floydWarshall(this.getSwitches(), this.getLinks());
+		//computeFlowTable(null);
 		/*********************************************************************/
 	}
 
