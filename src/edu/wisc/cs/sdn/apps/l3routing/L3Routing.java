@@ -142,8 +142,8 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			/*****************************************************************/
 			/* TODO: Update routing: add rules to route to new host          */
 			
-			distGraph.floydWarshall(this.getSwitches(), this.getLinks());
-			System.out.println("Ports: " + Arrays.asList(distGraph.ports));
+			//distGraph.floydWarshall(this.getSwitches(), this.getLinks());
+			//System.out.println("Ports: " + Arrays.asList(distGraph.ports));
 			computeFlowTable(host);
 			/*****************************************************************/
 		}
@@ -169,46 +169,11 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		return result;
 	}
 	
-	public void installRule(IOFSwitch currSwitch) {
-		for(IDevice idevice : knownHosts.keySet()) {				
-			
-			Host targetHost = knownHosts.get(idevice);
-			
-			// Find the port to send the packet on
-			IOFSwitch targetSwitch = targetHost.getSwitch();
-			long targetSwitchID = targetSwitch.getId();
-			
-			// If the targetSwitch and currSwitch is the same do nothing
-			if (targetSwitchID == currSwitch.getId()) {
-				continue;
-			}
-			
-			int nextHopIndex = distGraph.findPath(currSwitch.getId(), targetSwitchID);
-			System.out.println("nextHopIndex: " + nextHopIndex + ", currSwitchID: " + currSwitch.getId() + ", targetSwitchID: " + targetSwitchID);
-			
-			if (nextHopIndex == -1) {
-				continue;
-			}
-
-			long nextHopSwitchID = distGraph.indexToSwitch.get(nextHopIndex);
-			String portKey = distGraph.getKey(currSwitch.getId(), nextHopSwitchID);
-			boolean result = installRuleHelper(targetHost.getIPv4Address(), distGraph.ports.get(portKey), currSwitch);
-			System.out.println("nextHopSwitchID: " + nextHopSwitchID + ", portKey: " + portKey);
-			System.out.println("Rule to go from switch " + currSwitch.getId() + " -> " + targetSwitch.getId() + " is added: " + result);
-			
-			
-			
-			
-			
-			
-			
-			
-			
+	public void installRuleForNewHost(Host targetHost) {
+		if (!targetHost.isAttachedToSwitch()) { // Do not do anything if the host does not have any switch
+			return;
 		}
 		
-	}
-	
-	public void installRuleForNewHost(Host targetHost) {
 		Map<Long, IOFSwitch> switches = this.getSwitches();
 		for (Long currSwitchID : switches.keySet()) {
 			
@@ -237,8 +202,6 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		}
 	}
 	
-	
-	
 	public void computeFlowTable(Host host) {
 		if (host == null) {
 			for(IDevice idevice : knownHosts.keySet()) {
@@ -247,19 +210,18 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		} else {
 			installRuleForNewHost(host);
 		}
-		
-		
-		
-//		if (host == null) {
-//			table = Byte.parseByte(config.get("table"));
-//			
-//			Map<Long, IOFSwitch> switches = this.getSwitches();
-//			for (Long switchID : switches.keySet()) {
-//				installRule(switches.get(switchID));
-//			}
-//		} else { // If host is not null every switch needs to know how to reach this host
-//			
-//		}
+	}
+	
+	public boolean removeRuleForHost(Host targetHost) {
+		boolean result = true;
+		Map<Long, IOFSwitch> switches = this.getSwitches();
+		for (Long currSwitchID : switches.keySet()) {
+			OFMatch matchCriteria = new OFMatch();
+			matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
+			matchCriteria.setNetworkDestination(targetHost.getIPv4Address());
+			result = result & SwitchCommands.removeRules(switches.get(currSwitchID), table, matchCriteria);
+		}
+		return result;
 	}
 
 	/**
@@ -279,7 +241,8 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: remove rules to route to host               */
-
+		System.out.println("------------------- Inside device removed ------------------------");
+		removeRuleForHost(host);
 		/*********************************************************************/
 	}
 
@@ -307,7 +270,13 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change rules to route to host               */
-
+		//removeRuleForHost(host); // Remove the old rule
+		System.out.println("------------------- Inside device moved ------------------------");
+		if (host.isAttachedToSwitch()) {
+			boolean result = installRuleHelper(host.getIPv4Address(), host.getPort(), host.getSwitch());
+			System.out.println("Installed rule for host on its own switch: " + result);
+		}
+		computeFlowTable(host); // Add the new rule assuming - the switch of this host is now changed
 		/*********************************************************************/
 	}
 	
@@ -343,18 +312,22 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
 		
-		System.out.println("Inside switch removed");
+		System.out.println("-------------------- Inside switch removed ---------------------------");
+		// Instead of doing this we can also set the path of this switch to infinite on the table
 		distGraph.floydWarshall(this.getSwitches(), this.getLinks());
+		computeFlowTable(null);
 		/*********************************************************************/
 	}
 
 	/**
 	 * Event handler called when multiple links go up or down.
+	 * When a host joins the network, both the deviceAdded() and linkDiscovery() is called.
 	 * @param updateList information about the change in each link's state
 	 */
 	@Override
 	public void linkDiscoveryUpdate(List<LDUpdate> updateList) 
 	{
+		System.out.println("-------------------- Inside Link Discovery ---------------------------");
 		for (LDUpdate update : updateList)
 		{
 			// If we only know the switch & port for one end of the link, then
@@ -375,7 +348,9 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
+		// Might need to recompute the distances in case link isn't discovered in time.
 		distGraph.floydWarshall(this.getSwitches(), this.getLinks());
+		
 		computeFlowTable(null);
 		/*********************************************************************/
 	}
