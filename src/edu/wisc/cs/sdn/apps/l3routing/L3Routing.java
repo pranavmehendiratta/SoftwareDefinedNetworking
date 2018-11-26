@@ -136,23 +136,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			this.knownHosts.put(device, host);
 			
 			if (host.isAttachedToSwitch()) {
-				OFMatch matchCriteria = new OFMatch();
-				matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
-				matchCriteria.setNetworkDestination(host.getIPv4Address());
-				
-				OFAction actionOutput = new OFActionOutput(host.getPort());
-				
-				// Creating list of instructions to be executed when the dest ip matches
-				List<OFInstruction> instructions = new ArrayList<OFInstruction>();
-				OFInstructionApplyActions actions = new OFInstructionApplyActions();
-				List<OFAction> actionList = new ArrayList<OFAction>();
-				
-				actionList.add(actionOutput);
-				actions.setActions(actionList);
-				instructions.add(actions);
-				
-				boolean result = SwitchCommands.installRule(host.getSwitch(), table, SwitchCommands.DEFAULT_PRIORITY, matchCriteria, instructions);
-				System.out.println("Rule to go from switch " + currSwitch.getId() + " -> " + host.getIPv4Address() + " is added: " + result);
+				installRuleHelper(host.getIPv4Address(), host.getPort(), host.getSwitch());
 			}
 			
 			/*****************************************************************/
@@ -161,9 +145,27 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			distGraph.floydWarshall(this.getSwitches(), this.getLinks());
 			System.out.println("Ports: " + Arrays.asList(distGraph.ports));
 			computeFlowTable(null);
-			
 			/*****************************************************************/
 		}
+	}
+	
+	public void installRuleHelper(int ip, int port, IOFSwitch s) {
+		OFMatch matchCriteria = new OFMatch();
+		matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
+		matchCriteria.setNetworkDestination(ip);
+		
+		OFAction actionOutput = new OFActionOutput(port);
+		
+		// Creating list of instructions to be executed when the dest ip matches
+		List<OFInstruction> instructions = new ArrayList<OFInstruction>();
+		OFInstructionApplyActions actions = new OFInstructionApplyActions();
+		List<OFAction> actionList = new ArrayList<OFAction>();
+		
+		actionList.add(actionOutput);
+		actions.setActions(actionList);
+		instructions.add(actions);
+		
+		boolean result = SwitchCommands.installRule(s, table, SwitchCommands.DEFAULT_PRIORITY, matchCriteria, instructions);
 	}
 	
 	public void installRule(Host host) {
@@ -295,6 +297,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	
 		System.out.println("-------------------- Inside switch added ---------------------------");
 		distGraph.floydWarshall(this.getSwitches(), this.getLinks());
+		computeFlowTable(null);
 		/*********************************************************************/
 	}
 
@@ -344,7 +347,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		/*********************************************************************/
 		/* TODO: Update routing: change routing rules for all hosts          */
 		distGraph.floydWarshall(this.getSwitches(), this.getLinks());
-		//computeFlowTable(null);
+		computeFlowTable(null);
 		/*********************************************************************/
 	}
 

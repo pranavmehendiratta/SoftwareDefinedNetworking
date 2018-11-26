@@ -127,15 +127,17 @@ public class L3RoutingTable {
 	            } 
 	        } 
 	    } 
+	    graph = dist;
 	    print(dist);
 	}
 	
 	public int findPath(long start, long end) {
+		System.out.println("------------- Inside findPath ----------------");
 		int startIndex = switchToIndex.get(start);
 		int endIndex = switchToIndex.get(end);
-		
-		System.out.println("Inside findPath");
-		System.out.println("startIndex: " + startIndex);
+		System.out.println("startIndex: " + startIndex + ", endIndex: " + endIndex + ", start " + start + ", end: " + end);
+				
+		print(graph);		
 		
 		// Directly send the packet to the end switch
 		int minDist = Integer.MAX_VALUE;
@@ -143,6 +145,7 @@ public class L3RoutingTable {
 		if (graph[startIndex][endIndex] == 1) {
 			nextHop = endIndex;
 			minDist = 1;
+			System.out.println("---------------------------------------------");
 			return nextHop;
 		}
 		
@@ -155,6 +158,7 @@ public class L3RoutingTable {
 				}
 			}
 		}
+		System.out.println("---------------------------------------------");
 		return nextHop;
 		
 	}	
