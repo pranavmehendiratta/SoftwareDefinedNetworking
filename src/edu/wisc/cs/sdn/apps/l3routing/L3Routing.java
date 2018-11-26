@@ -136,7 +136,8 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			this.knownHosts.put(device, host);
 			
 			if (host.isAttachedToSwitch()) {
-				installRuleHelper(host.getIPv4Address(), host.getPort(), host.getSwitch());
+				boolean result = installRuleHelper(host.getIPv4Address(), host.getPort(), host.getSwitch());
+				System.out.println("Installed rule for host on its own switch: " + result);
 			}
 			
 			/*****************************************************************/
@@ -149,7 +150,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		}
 	}
 	
-	public void installRuleHelper(int ip, int port, IOFSwitch s) {
+	public boolean installRuleHelper(int ip, int port, IOFSwitch s) {
 		OFMatch matchCriteria = new OFMatch();
 		matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
 		matchCriteria.setNetworkDestination(ip);
@@ -166,24 +167,21 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 		instructions.add(actions);
 		
 		boolean result = SwitchCommands.installRule(s, table, SwitchCommands.DEFAULT_PRIORITY, matchCriteria, instructions);
+		return result;
 	}
 	
-	public void installRule(Host host) {
-		IOFSwitch currSwitch = host.getSwitch();
+	public void installRule(IOFSwitch currSwitch) {
 		for(IDevice idevice : knownHosts.keySet()) {				
 			
 			Host targetHost = knownHosts.get(idevice);
-			if(targetHost == host) 
-				continue;
-			
-			// Creating OFMatch object and setting the ethernet type and destination ip
-			OFMatch matchCriteria = new OFMatch();
-			matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
-			matchCriteria.setNetworkDestination(targetHost.getIPv4Address());
 			
 			// Find the port to send the packet on
 			IOFSwitch targetSwitch = targetHost.getSwitch();
 			long targetSwitchID = targetSwitch.getId();
+			
+			if (targetSwitchID == currSwitch.getId()) {
+				continue;
+			}
 			
 			int nextHopIndex = distGraph.findPath(currSwitch.getId(), targetSwitchID);
 			System.out.println("nextHopIndex: " + nextHopIndex + ", currSwitchID: " + currSwitch.getId() + ", targetSwitchID: " + targetSwitchID);
@@ -193,24 +191,33 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			}
 
 			long nextHopSwitchID = distGraph.indexToSwitch.get(nextHopIndex);
-			
 			String portKey = distGraph.getKey(currSwitch.getId(), nextHopSwitchID);
+			boolean result = installRuleHelper(targetHost.getIPv4Address(), distGraph.ports.get(portKey), currSwitch);
+			
+			// Creating OFMatch object and setting the Ethernet type and destination IP
+//			OFMatch matchCriteria = new OFMatch();
+//			matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
+//			matchCriteria.setNetworkDestination(targetHost.getIPv4Address());
+			
+			
+			
+			
 			
 			System.out.println("nextHopSwitchID: " + nextHopSwitchID + ", portKey: " + portKey);
 			
 			// creating the action output object
-			OFAction actionOutput = new OFActionOutput(distGraph.ports.get(portKey));
+//			OFAction actionOutput = new OFActionOutput(distGraph.ports.get(portKey));
+//			
+//			// Creating list of instructions to be executed when the dest ip matches
+//			List<OFInstruction> instructions = new ArrayList<OFInstruction>();
+//			OFInstructionApplyActions actions = new OFInstructionApplyActions();
+//			List<OFAction> actionList = new ArrayList<OFAction>();
+//			
+//			actionList.add(actionOutput);
+//			actions.setActions(actionList);
+//			instructions.add(actions);
 			
-			// Creating list of instructions to be executed when the dest ip matches
-			List<OFInstruction> instructions = new ArrayList<OFInstruction>();
-			OFInstructionApplyActions actions = new OFInstructionApplyActions();
-			List<OFAction> actionList = new ArrayList<OFAction>();
-			
-			actionList.add(actionOutput);
-			actions.setActions(actionList);
-			instructions.add(actions);
-			
-			boolean result = SwitchCommands.installRule(currSwitch, table, SwitchCommands.DEFAULT_PRIORITY, matchCriteria, instructions);
+			//boolean result = SwitchCommands.installRule(currSwitch, table, SwitchCommands.DEFAULT_PRIORITY, matchCriteria, instructions);
 			System.out.println("Rule to go from switch " + currSwitch.getId() + " -> " + targetSwitch.getId() + " is added: " + result);
 		}
 		
@@ -218,19 +225,14 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	
 	
 	public void computeFlowTable(Host host) {
-		//Iterate through all the routers
 		if (host == null) {
 			table = Byte.parseByte(config.get("table"));
-			for(IDevice idevice : knownHosts.keySet()) {
-				installRule(knownHosts.get(idevice));
+			
+			Map<Long, IOFSwitch> switches = this.getSwitches();
+			for (Long switchID : switches.keySet()) {
+				installRule(switches.get(switchID));
 			}
 		}
-		
-		//Else iterate only for that router
-		else {
-			installRule(host);
-		}
-		
 	}
 
 	/**
