@@ -127,7 +127,6 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 	public void deviceAdded(IDevice device) 
 	{
 		Host host = new Host(device, this.floodlightProv);
-		IOFSwitch currSwitch = host.getSwitch();
 		
 		// We only care about a new host if we know its IP
 		if (host.getIPv4Address() != null)
@@ -145,7 +144,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			
 			distGraph.floydWarshall(this.getSwitches(), this.getLinks());
 			System.out.println("Ports: " + Arrays.asList(distGraph.ports));
-			computeFlowTable(null);
+			computeFlowTable(host);
 			/*****************************************************************/
 		}
 	}
@@ -179,6 +178,7 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			IOFSwitch targetSwitch = targetHost.getSwitch();
 			long targetSwitchID = targetSwitch.getId();
 			
+			// If the targetSwitch and currSwitch is the same do nothing
 			if (targetSwitchID == currSwitch.getId()) {
 				continue;
 			}
@@ -193,46 +193,73 @@ public class L3Routing implements IFloodlightModule, IOFSwitchListener,
 			long nextHopSwitchID = distGraph.indexToSwitch.get(nextHopIndex);
 			String portKey = distGraph.getKey(currSwitch.getId(), nextHopSwitchID);
 			boolean result = installRuleHelper(targetHost.getIPv4Address(), distGraph.ports.get(portKey), currSwitch);
-			
-			// Creating OFMatch object and setting the Ethernet type and destination IP
-//			OFMatch matchCriteria = new OFMatch();
-//			matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
-//			matchCriteria.setNetworkDestination(targetHost.getIPv4Address());
-			
-			
-			
-			
-			
 			System.out.println("nextHopSwitchID: " + nextHopSwitchID + ", portKey: " + portKey);
-			
-			// creating the action output object
-//			OFAction actionOutput = new OFActionOutput(distGraph.ports.get(portKey));
-//			
-//			// Creating list of instructions to be executed when the dest ip matches
-//			List<OFInstruction> instructions = new ArrayList<OFInstruction>();
-//			OFInstructionApplyActions actions = new OFInstructionApplyActions();
-//			List<OFAction> actionList = new ArrayList<OFAction>();
-//			
-//			actionList.add(actionOutput);
-//			actions.setActions(actionList);
-//			instructions.add(actions);
-			
-			//boolean result = SwitchCommands.installRule(currSwitch, table, SwitchCommands.DEFAULT_PRIORITY, matchCriteria, instructions);
 			System.out.println("Rule to go from switch " + currSwitch.getId() + " -> " + targetSwitch.getId() + " is added: " + result);
+			
+			
+			
+			
+			
+			
+			
+			
+			
 		}
 		
 	}
 	
+	public void installRuleForNewHost(Host targetHost) {
+		Map<Long, IOFSwitch> switches = this.getSwitches();
+		for (Long currSwitchID : switches.keySet()) {
+			
+			// Find the port to send the packet on
+			IOFSwitch targetSwitch = targetHost.getSwitch();
+			long targetSwitchID = targetSwitch.getId();
+			
+			// If the targetSwitch and currSwitch is the same do nothing
+			if (targetSwitchID == currSwitchID) {
+				continue;
+			}
+			
+			IOFSwitch currSwitch = switches.get(currSwitchID);
+			int nextHopIndex = distGraph.findPath(currSwitch.getId(), targetSwitchID);
+			System.out.println("nextHopIndex: " + nextHopIndex + ", currSwitchID: " + currSwitch.getId() + ", targetSwitchID: " + targetSwitchID);
+			
+			if (nextHopIndex == -1) {
+				continue;
+			}
+
+			long nextHopSwitchID = distGraph.indexToSwitch.get(nextHopIndex);
+			String portKey = distGraph.getKey(currSwitch.getId(), nextHopSwitchID);
+			boolean result = installRuleHelper(targetHost.getIPv4Address(), distGraph.ports.get(portKey), currSwitch);
+			System.out.println("nextHopSwitchID: " + nextHopSwitchID + ", portKey: " + portKey);
+			System.out.println("Rule to go from switch " + currSwitch.getId() + " -> " + targetSwitch.getId() + " is added: " + result);
+		}
+	}
+	
+	
 	
 	public void computeFlowTable(Host host) {
 		if (host == null) {
-			table = Byte.parseByte(config.get("table"));
-			
-			Map<Long, IOFSwitch> switches = this.getSwitches();
-			for (Long switchID : switches.keySet()) {
-				installRule(switches.get(switchID));
+			for(IDevice idevice : knownHosts.keySet()) {
+				installRuleForNewHost(knownHosts.get(idevice));
 			}
+		} else {
+			installRuleForNewHost(host);
 		}
+		
+		
+		
+//		if (host == null) {
+//			table = Byte.parseByte(config.get("table"));
+//			
+//			Map<Long, IOFSwitch> switches = this.getSwitches();
+//			for (Long switchID : switches.keySet()) {
+//				installRule(switches.get(switchID));
+//			}
+//		} else { // If host is not null every switch needs to know how to reach this host
+//			
+//		}
 	}
 
 	/**
