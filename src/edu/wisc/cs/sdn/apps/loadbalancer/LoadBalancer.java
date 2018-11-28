@@ -276,6 +276,9 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		if (msg.getType() != OFType.PACKET_IN)
 		{ return Command.CONTINUE; }
 		OFPacketIn pktIn = (OFPacketIn)msg;
+	
+		System.out.println("---------------- Inside receive method in Loadbalancer ------------------");
+		
 		
 		// Handle the packet
 		Ethernet ethPkt = new Ethernet();
@@ -301,11 +304,20 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		 * so connection-specific rules should have an idle timeout of 20 seconds.
 		 */
 		if(ethPkt.getEtherType() == Ethernet.TYPE_IPv4) {
+			
+			System.out.println("Packet type is IPv4");
+			
 			IPv4 ipPacket = (IPv4) ethPkt.getPayload();
-//			if(ipPacket.getProtocol() == IPv4.PROTOCOL_TCP) {
+			
+			if(ipPacket.getProtocol() == IPv4.PROTOCOL_TCP) {
+				
+				System.out.println("Packet protocol is TCP");
+				
 				TCP tcpPacket = (TCP) ipPacket.getPayload();
 				// Connection specific rule.
 				if(tcpPacket.getFlags() == TCP_FLAG_SYN) {
+					
+					System.out.print("TCP FLAG IS SYN");
 					
 					// Get the LoadBalancer based on dest address
 					int lbIP = ipPacket.getDestinationAddress();
@@ -322,6 +334,9 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 					
 					boolean result = TCPRuleHelper(srcIP, newDestIP, srcMAC, newDestMac, sw, lbIP, lbMAC);
 					
+					
+					// Do we need to send reply to this incoming packet? after installing rules
+					
 //					//Change the payload's source and destination MAC,Address.
 //					ipPacket.setDestinationAddress(newDestIP);
 //					ethPkt.setDestinationMACAddress(newDestMac);
@@ -332,13 +347,16 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 					
 					
 					
-//				}
+				}
 				
 			}
 		} else if (ethPkt.getEtherType() == Ethernet.TYPE_ARP) {
+			System.out.println("Packet type is ARP");
 			sendARPReply(ethPkt, sw, (short)pktIn.getInPort());
 		}
 		// We don't care about other packets
+		
+		System.out.println("---------------- Done with receive method in Loadbalancer ------------------");
 		return Command.CONTINUE;
 	}
 	
