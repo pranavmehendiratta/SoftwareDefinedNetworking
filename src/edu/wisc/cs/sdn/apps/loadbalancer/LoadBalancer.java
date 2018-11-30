@@ -23,6 +23,7 @@ import org.openflow.protocol.instruction.OFInstructionApplyActions;
 import org.openflow.protocol.instruction.OFInstructionGotoTable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.openflow.protocol.instruction.OFInstructionGotoTable;
 
 import java.nio.ByteBuffer;
 
@@ -156,7 +157,11 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 			System.out.println("Installing rule for IP: " + IPv4.fromIPv4Address(virtualIP));
 			installRuleHelper(virtualIP, OFPort.OFPP_CONTROLLER.getValue(), sw);
 		}
-		
+		// Get all the rules from l3RoutingTable
+		OFInstruction l3Instructions = new OFInstructionGotoTable(L3Routing.table);
+		List<OFInstruction> instructions = new ArrayList<OFInstruction>();
+		instructions.add(l3Instructions);
+		SwitchCommands.installRule(sw, table, SwitchCommands.DEFAULT_PRIORITY, new OFMatch(), instructions);
 	}
 	
 
@@ -232,9 +237,13 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		actionList.add(new OFActionSetField(OFOXMFieldType.IPV4_DST, destIP));
 		actions.setActions(actionList);
 		instructions.add(actions);
+    
+		// Get the L3Routing table and add all the rules.
+		OFInstruction l3Instructions = new OFInstructionGotoTable(L3Routing.table);
+		instructions.add(l3Instructions);
+
 		boolean result1 = SwitchCommands.installRule(sw, table, SwitchCommands.MAX_PRIORITY, 
 				matchCriteria, instructions, SwitchCommands.NO_TIMEOUT, TIMEOUT);
-		
 		
 		// Rule to route the response
 		matchCriteria = new OFMatch();
@@ -255,6 +264,7 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		actionList.add(new OFActionSetField(OFOXMFieldType.IPV4_SRC, lbIP));
 		actions.setActions(actionList);
 		instructions.add(actions);
+		instructions.add(l3Instructions);
 		boolean result2 = SwitchCommands.installRule(sw, table, SwitchCommands.MAX_PRIORITY, 
 				matchCriteria, instructions, SwitchCommands.NO_TIMEOUT, TIMEOUT);
 		
