@@ -1,20 +1,35 @@
 package edu.wisc.cs.sdn.apps.loadbalancer;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
+import org.openflow.protocol.OFMatch;
 import org.openflow.protocol.OFMessage;
+import org.openflow.protocol.OFOXMField;
+import org.openflow.protocol.OFOXMFieldType;
 import org.openflow.protocol.OFPacketIn;
+import org.openflow.protocol.OFPort;
 import org.openflow.protocol.OFType;
-
+import org.openflow.protocol.action.OFAction;
+import org.openflow.protocol.action.OFActionOutput;
+import org.openflow.protocol.action.OFActionSetField;
+import org.openflow.protocol.instruction.OFInstruction;
+import org.openflow.protocol.instruction.OFInstructionApplyActions;
+import org.openflow.protocol.instruction.OFInstructionGotoTable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.openflow.protocol.instruction.OFInstructionGotoTable;
 
+import java.nio.ByteBuffer;
+
+import edu.wisc.cs.sdn.apps.l3routing.*;
 import edu.wisc.cs.sdn.apps.util.ArpServer;
-
+import edu.wisc.cs.sdn.apps.util.SwitchCommands;
 import net.floodlightcontroller.core.FloodlightContext;
 import net.floodlightcontroller.core.IFloodlightProviderService;
 import net.floodlightcontroller.core.IOFMessageListener;
@@ -29,7 +44,10 @@ import net.floodlightcontroller.core.module.IFloodlightService;
 import net.floodlightcontroller.devicemanager.IDevice;
 import net.floodlightcontroller.devicemanager.IDeviceService;
 import net.floodlightcontroller.devicemanager.internal.DeviceManagerImpl;
+import net.floodlightcontroller.packet.ARP;
 import net.floodlightcontroller.packet.Ethernet;
+import net.floodlightcontroller.packet.IPv4;
+import net.floodlightcontroller.packet.TCP;
 import net.floodlightcontroller.util.MACAddress;
 
 public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
@@ -129,8 +147,128 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		/*       balancer IP to the controller                               */
 		/*       (2) ARP packets to the controller, and                      */
 		/*       (3) all other packets to the next rule table in the switch  */
-		
+		addRuleForLBOnSwitch(sw);
 		/*********************************************************************/
+	}
+	
+	public void addRuleForLBOnSwitch(IOFSwitch sw) {
+		// Add rules to reach each load balancer
+		for (int virtualIP : this.instances.keySet()) {
+			System.out.println("Installing rule for IP: " + IPv4.fromIPv4Address(virtualIP));
+			installRuleHelper(virtualIP, OFPort.OFPP_CONTROLLER.getValue(), sw);
+		}
+		// Get all the rules from l3RoutingTable
+		OFInstruction l3Instructions = new OFInstructionGotoTable(L3Routing.table);
+		List<OFInstruction> instructions = new ArrayList<OFInstruction>();
+		instructions.add(l3Instructions);
+		SwitchCommands.installRule(sw, table, SwitchCommands.DEFAULT_PRIORITY, new OFMatch(), instructions);
+	}
+	
+
+	public boolean installRuleHelper(int ip, int port, IOFSwitch s) {	
+		
+		System.out.println("############ Inside installRuleHelper ##############");
+		
+		// IPv4 PACKET FORWARD RULE
+		OFMatch matchCriteria = new OFMatch();
+		matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
+		matchCriteria.setNetworkProtocol(OFMatch.IP_PROTO_TCP);
+		matchCriteria.setNetworkDestination(ip);
+		
+		OFAction actionOutput = new OFActionOutput(port);
+		
+		// Creating list of instructions to be executed when the dest ip matches
+		List<OFInstruction> instructions = new ArrayList<OFInstruction>();
+		OFInstructionApplyActions actions = new OFInstructionApplyActions();
+		List<OFAction> actionList = new ArrayList<OFAction>();
+		
+		actionList.add(actionOutput);
+		actions.setActions(actionList);
+		instructions.add(actions);
+		boolean result1 = SwitchCommands.installRule(s, table, (short)(SwitchCommands.DEFAULT_PRIORITY + 1), matchCriteria, instructions);
+		
+		System.out.println("rule to redirect IP packet for " + IPv4.fromIPv4Address(ip) + " added: " + result1);
+		
+		// ARP RULE
+		matchCriteria = new OFMatch();
+		matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_ARP);
+		matchCriteria.setField(OFOXMFieldType.ARP_TPA, ip);
+		//matchCriteria.setNetworkDestination(ip);
+		
+		actionOutput = new OFActionOutput(port);
+		
+		// Creating list of instructions to be executed when the dest ip matches
+		instructions = new ArrayList<OFInstruction>();
+		actions = new OFInstructionApplyActions();
+		actionList = new ArrayList<OFAction>();
+		
+		actionList.add(actionOutput);
+		actions.setActions(actionList);
+		instructions.add(actions);
+		
+		boolean result2 = SwitchCommands.installRule(s, table, (short)(SwitchCommands.DEFAULT_PRIORITY + 1), matchCriteria, instructions);
+		
+		System.out.println("rule for processing ARP request for " + IPv4.fromIPv4Address(ip) + " added: " + result1);
+		
+		return result1 && result2;
+	}
+	
+	
+	public boolean TCPRuleHelper(int srcIP, int destIP, byte[] srcMac, byte[] destMac, IOFSwitch sw, int lbIP, byte[] lbMac) {
+		
+		short TIMEOUT = 20;
+		
+		// Rule to route to the server
+		OFMatch matchCriteria = new OFMatch();
+		matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
+		matchCriteria.setNetworkProtocol(OFMatch.IP_PROTO_TCP);
+		
+		matchCriteria.setNetworkDestination(lbIP);
+		matchCriteria.setNetworkSource(srcIP);
+		
+		matchCriteria.setDataLayerDestination(lbMac);
+		matchCriteria.setDataLayerSource(srcMac);
+		
+		// Creating list of instructions to be executed when the dest ip matches
+		List<OFInstruction> instructions = new ArrayList<OFInstruction>();
+		OFInstructionApplyActions actions = new OFInstructionApplyActions();
+		List<OFAction> actionList = new ArrayList<OFAction>();
+		actionList.add(new OFActionSetField(OFOXMFieldType.ETH_DST, destMac));
+		actionList.add(new OFActionSetField(OFOXMFieldType.IPV4_DST, destIP));
+		actions.setActions(actionList);
+		instructions.add(actions);
+    
+		// Get the L3Routing table and add all the rules.
+		OFInstruction l3Instructions = new OFInstructionGotoTable(L3Routing.table);
+		instructions.add(l3Instructions);
+
+		boolean result1 = SwitchCommands.installRule(sw, table, SwitchCommands.MAX_PRIORITY, 
+				matchCriteria, instructions, SwitchCommands.NO_TIMEOUT, TIMEOUT);
+		
+		// Rule to route the response
+		matchCriteria = new OFMatch();
+		matchCriteria.setDataLayerType(OFMatch.ETH_TYPE_IPV4);
+		matchCriteria.setNetworkProtocol(OFMatch.IP_PROTO_TCP);
+		
+		matchCriteria.setNetworkDestination(srcIP);
+		matchCriteria.setNetworkSource(destIP);
+		
+		matchCriteria.setDataLayerDestination(srcMac);
+		matchCriteria.setDataLayerSource(destMac);
+		
+		// Creating list of instructions to be executed when the dest ip matches
+		instructions = new ArrayList<OFInstruction>();
+		actions = new OFInstructionApplyActions();
+		actionList = new ArrayList<OFAction>();
+		actionList.add(new OFActionSetField(OFOXMFieldType.ETH_SRC, lbMac));
+		actionList.add(new OFActionSetField(OFOXMFieldType.IPV4_SRC, lbIP));
+		actions.setActions(actionList);
+		instructions.add(actions);
+		instructions.add(l3Instructions);
+		boolean result2 = SwitchCommands.installRule(sw, table, SwitchCommands.MAX_PRIORITY, 
+				matchCriteria, instructions, SwitchCommands.NO_TIMEOUT, TIMEOUT);
+		
+		return result1 && result2;
 	}
 	
 	/**
@@ -148,6 +286,9 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		if (msg.getType() != OFType.PACKET_IN)
 		{ return Command.CONTINUE; }
 		OFPacketIn pktIn = (OFPacketIn)msg;
+	
+		System.out.println("---------------- Inside receive method in Loadbalancer ------------------");
+		
 		
 		// Handle the packet
 		Ethernet ethPkt = new Ethernet();
@@ -160,12 +301,131 @@ public class LoadBalancer implements IFloodlightModule, IOFSwitchListener,
 		/*       connection-specific rules to rewrite IP and MAC addresses;  */
 		/*       ignore all other packets                                    */
 		
-		/*********************************************************************/
-
+		/*********************************************************************/		
 		
+		// TCP Handshake
+		/*
+		 * Connection-specific rules should match packets on the basis of Ethernet type, source IP address, 
+		 * destination IP address, protocol, TCP source port, and TCP destination port. 
+		 * Connection-specific rules should take precedence over the rules that send TCP packets to the controller,
+		 * otherwise every TCP packet would be sent to the controller. 
+		 * Therefore, these rules should have a higher priority than the rules installed when a switch joins the network.  
+		 * Also, we want connection-specific rules to be removed when a TCP connection ends, 
+		 * so connection-specific rules should have an idle timeout of 20 seconds.
+		 */
+		if(ethPkt.getEtherType() == Ethernet.TYPE_IPv4) {
+			
+			System.out.println("Packet type is IPv4");
+			
+			IPv4 ipPacket = (IPv4) ethPkt.getPayload();
+			
+			if(ipPacket.getProtocol() == IPv4.PROTOCOL_TCP) {
+				
+				System.out.println("Packet protocol is TCP");
+				
+				TCP tcpPacket = (TCP) ipPacket.getPayload();
+				// Connection specific rule.
+				if(tcpPacket.getFlags() == TCP_FLAG_SYN) {
+					
+					System.out.print("TCP FLAG IS SYN");
+					
+					// Get the LoadBalancer based on dest address
+					int lbIP = ipPacket.getDestinationAddress();
+					LoadBalancerInstance currLB = instances.get(lbIP);
+					
+					// Get the Target host specifications.
+					int newDestIP = currLB.getNextHostIP();
+					byte[] newDestMac = getHostMACAddress(newDestIP);
+					
+					int srcIP = ipPacket.getSourceAddress();
+					byte[] srcMAC = ethPkt.getSourceMACAddress();
+					
+					byte[] lbMAC = ethPkt.getDestinationMACAddress();
+					
+					boolean result = TCPRuleHelper(srcIP, newDestIP, srcMAC, newDestMac, sw, lbIP, lbMAC);
+					
+					
+					// Do we need to send reply to this incoming packet? after installing rules
+					
+//					//Change the payload's source and destination MAC,Address.
+//					ipPacket.setDestinationAddress(newDestIP);
+//					ethPkt.setDestinationMACAddress(newDestMac);
+//					ipPacket.setSourceAddress(virtualIP);
+//					ethPkt.setSourceMACAddress(currLB.getVirtualMAC());
+					
+					
+					
+					
+					
+				}
+				
+			}
+		} else if (ethPkt.getEtherType() == Ethernet.TYPE_ARP) {
+			System.out.println("Packet type is ARP");
+			sendARPReply(ethPkt, sw, (short)pktIn.getInPort());
+		}
 		// We don't care about other packets
+		
+		System.out.println("---------------- Done with receive method in Loadbalancer ------------------");
 		return Command.CONTINUE;
 	}
+	
+	public void sendARPReply(Ethernet etherPacket, IOFSwitch sw, short port) {
+		
+		System.out.println("----------------- sendARPReply -------------------");
+		StringBuilder sb = new StringBuilder();
+		for (int key : instances.keySet()) {
+			sb.append(IPv4.fromIPv4Address(key));
+			sb.append(", ");
+		}
+		
+		ARP arpPacket = (ARP)etherPacket.getPayload();
+		
+		
+		
+		int lbIP = ByteBuffer.wrap(arpPacket.getTargetProtocolAddress()).getInt();
+		
+		// Ignore all the ARP requests for IPs other than loadbalancers IPs
+		// TODO: Might need to forward it to the ArpServer receive function
+		if (!instances.containsKey(lbIP)) {
+			return;
+		}
+		
+		
+		System.out.println("loadbalancer table: " + sb.toString());
+		System.out.println("Arp request for IP: " + IPv4.fromIPv4Address(lbIP));
+		System.out.println("lbMac: " + instances.get(lbIP).getVirtualMAC());
+		
+		byte [] lbMAC = instances.get(lbIP).getVirtualMAC();
+
+		// create ethernet packet
+		Ethernet ether = new Ethernet();
+		ether.setEtherType(Ethernet.TYPE_ARP);
+		
+		// source mac of the packet - interface on which we received initially
+		ether.setSourceMACAddress(lbMAC);
+
+		// set destination mac
+		ether.setDestinationMACAddress(etherPacket.getSourceMACAddress());
+
+		// Create ARP packet
+		ARP arp = new ARP();
+
+		arp.setHardwareType(ARP.HW_TYPE_ETHERNET);
+		arp.setProtocolType(ARP.PROTO_TYPE_IP);
+		arp.setHardwareAddressLength((byte)Ethernet.DATALAYER_ADDRESS_LENGTH);
+		arp.setProtocolAddressLength((byte)4);
+		arp.setOpCode(ARP.OP_REPLY);
+		arp.setSenderHardwareAddress(lbMAC);
+		arp.setSenderProtocolAddress(lbIP);
+		arp.setTargetHardwareAddress(arpPacket.getSenderHardwareAddress());
+		arp.setTargetProtocolAddress(arpPacket.getSenderProtocolAddress());
+	
+		ether.setPayload(arp);
+		SwitchCommands.sendPacket(sw, port, ether);
+	}
+	
+	
 	
 	/**
 	 * Returns the MAC address for a host, given the host's IP address.
